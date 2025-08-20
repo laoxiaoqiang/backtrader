@@ -1,13 +1,23 @@
 import logging
 import schedule
 import time
+import sys
+import os
+import argparse
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import threading
 import pandas as pd
 
-from .database import DatabaseManager
-from .fetchers import OKXDataFetcher, BinanceDataFetcher, YahooDataFetcher, TushareDataFetcher
+# 支持相对导入和绝对导入
+try:
+    from .database import DatabaseManager
+    from .fetchers import OKXDataFetcher, BinanceDataFetcher, YahooDataFetcher, TushareDataFetcher
+except ImportError:
+    # 当作为脚本直接运行时，使用绝对导入
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from database import DatabaseManager
+    from fetchers import OKXDataFetcher, BinanceDataFetcher, YahooDataFetcher, TushareDataFetcher
 
 class DataFeedEngine:
     """数据获取引擎"""
@@ -416,3 +426,129 @@ class DataFeedEngine:
             删除的记录数
         """
         return self.db_manager.clear_data(symbol, exchange, timeframe)
+
+
+def main():
+    """命令行接口"""
+    parser = argparse.ArgumentParser(description='DataFeed Engine 命令行工具')
+    parser.add_argument('--action', choices=['stats', 'fetch', 'clear', 'start'], 
+                        required=True, help='执行的操作')
+    parser.add_argument('--config', help='配置文件路径')
+    parser.add_argument('--db', default='market_data.db', help='数据库文件路径')
+    parser.add_argument('--symbol', help='交易对符号 (如: BTC/USDT)')
+    parser.add_argument('--exchange', help='交易所 (如: okx, binance, yahoo, tushare)')
+    parser.add_argument('--timeframe', help='时间周期 (如: 1m, 5m, 1h, 1d)')
+    parser.add_argument('--days', type=int, default=7, help='获取多少天的数据')
+    
+    args = parser.parse_args()
+    
+    # 如果没有指定配置文件，使用脚本所在目录的config.ini
+    if not args.config:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        args.config = os.path.join(script_dir, 'config.ini')
+    
+    # 初始化引擎
+    try:
+        engine = DataFeedEngine(db_path=args.db, config_path=args.config)
+    except Exception as e:
+        print(f"❌ 初始化引擎失败: {e}")
+        return 1
+    
+    if args.action == 'stats':
+        # 显示数据库统计信息
+        try:
+            info = engine.get_database_info()
+            print("=" * 50)
+            print("📊 DataFeed Engine 数据库统计")
+            print("=" * 50)
+            print(f"数据库路径: {info['database_path']}")
+            print(f"数据库大小: {info['database_size'] / 1024:.2f} KB")
+            print(f"总记录数: {info['total_records']:,}")
+            
+            if info['total_records'] > 0:
+                print("\n📈 按交易所分布:")
+                for exchange, count in info.get('records_by_exchange', {}).items():
+                    print(f"  {exchange}: {count:,} 条记录")
+                
+                print("\n⏱️ 按时间周期分布:")
+                for timeframe, count in info.get('records_by_timeframe', {}).items():
+                    print(f"  {timeframe}: {count:,} 条记录")
+                
+                print("\n🔥 热门交易对 (前10):")
+                for symbol, count in list(info.get('top_symbols', {}).items())[:10]:
+                    print(f"  {symbol}: {count:,} 条记录")
+            else:
+                print("\n💡 数据库为空，使用 --action fetch 开始获取数据")
+            
+        except Exception as e:
+            print(f"❌ 获取统计信息失败: {e}")
+            return 1
+    
+    elif args.action == 'fetch':
+        # 获取数据
+        print("🔄 开始获取数据...")
+        
+        try:
+            if args.symbol and args.exchange:
+                # 获取指定交易对的数据
+                if args.exchange in ['okx', 'binance']:
+                    results = engine.fetch_crypto_data(
+                        symbols=[args.symbol],
+                        timeframes=[args.timeframe] if args.timeframe else ['1h', '1d'],
+                        exchanges=[args.exchange],
+                        days=args.days
+                    )
+                    print(f"✅ 获取完成: {results}")
+                elif args.exchange == 'yahoo':
+                    results = engine.fetch_us_stock_data(
+                        symbols=[args.symbol],
+                        timeframes=[args.timeframe] if args.timeframe else ['1d'],
+                        days=args.days
+                    )
+                    print(f"✅ 获取完成: 插入 {results} 条记录")
+                elif args.exchange == 'tushare':
+                    results = engine.fetch_a_stock_data(
+                        symbols=[args.symbol],
+                        timeframes=[args.timeframe] if args.timeframe else ['1d'],
+                        days=args.days
+                    )
+                    print(f"✅ 获取完成: 插入 {results} 条记录")
+            else:
+                # 获取所有配置的数据
+                results = engine.fetch_all_data()
+                print(f"✅ 获取完成: {results}")
+                
+        except Exception as e:
+            print(f"❌ 获取数据失败: {e}")
+            return 1
+    
+    elif args.action == 'clear':
+        # 清理数据
+        try:
+            deleted_count = engine.clear_database(args.symbol, args.exchange, args.timeframe)
+            print(f"✅ 已删除 {deleted_count} 条记录")
+        except Exception as e:
+            print(f"❌ 清理数据失败: {e}")
+            return 1
+    
+    elif args.action == 'start':
+        # 启动定时任务
+        print("🚀 启动DataFeed Engine定时任务...")
+        try:
+            engine.start_scheduler()
+            print("✅ 定时任务已启动，按 Ctrl+C 停止")
+            try:
+                while True:
+                    time.sleep(60)
+            except KeyboardInterrupt:
+                engine.stop_scheduler()
+                print("\n✅ 定时任务已停止")
+        except Exception as e:
+            print(f"❌ 启动定时任务失败: {e}")
+            return 1
+    
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
