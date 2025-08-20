@@ -19,7 +19,9 @@ def test_database_connection():
     """测试数据库连接"""
     print("=== 测试数据库连接 ===")
     try:
-        engine = DataFeedEngine()
+        # 使用当前目录下的config.ini
+        config_path = os.path.join(os.path.dirname(__file__), "config.ini")
+        engine = DataFeedEngine(config_path=config_path)
         info = engine.get_database_info()
         print(f"数据库路径: {info['database_path']}")
         print(f"数据库大小: {info['database_size']} bytes")
