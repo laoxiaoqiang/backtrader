@@ -212,7 +212,7 @@ class DataFeedEngine:
     def fetch_a_stock_data(self, symbols: List[str], timeframes: List[str] = ['1d'], 
                           days: int = 365) -> int:
         """
-        获取A股数据
+        获取A股数据（批量版本）
         
         Args:
             symbols: 股票代码列表
@@ -222,55 +222,88 @@ class DataFeedEngine:
         Returns:
             插入的数据条数
         """
-        fetcher = self.fetchers['tushare']
         total_inserted = 0
-        
-        end_time = datetime.now()
-        start_time = end_time - timedelta(days=days)
         
         for symbol in symbols:
             for timeframe in timeframes:
                 try:
-                    self.logger.info(f"获取Tushare {symbol} {timeframe} 数据...")
-                    
-                    # 检查是否已有数据
-                    latest_timestamp = self.db_manager.get_latest_timestamp(
-                        symbol, 'tushare', timeframe
-                    )
-                    
-                    if latest_timestamp:
-                        fetch_start_time = datetime.fromtimestamp(latest_timestamp / 1000)
-                        fetch_start_time += self._get_timeframe_delta(timeframe)
-                    else:
-                        fetch_start_time = start_time
-                    
-                    if fetch_start_time >= end_time:
-                        self.logger.info(f"Tushare {symbol} {timeframe} 数据已是最新")
-                        continue
-                    
-                    # 获取数据
-                    data = fetcher.fetch_data(
+                    # 使用单股票获取方法，避免代码重复
+                    inserted_count = self.fetch_single_stock_data(
                         symbol=symbol,
+                        exchange='tushare',
                         timeframe=timeframe,
-                        start_time=fetch_start_time,
-                        end_time=end_time
+                        days=days
                     )
+                    total_inserted += inserted_count
                     
-                    # 保存到数据库
-                    if not data.empty:
-                        inserted_count = self.db_manager.save_data(
-                            data, symbol, 'tushare', timeframe
-                        )
-                        total_inserted += inserted_count
-                        self.logger.info(f"插入 {inserted_count} 条Tushare {symbol} {timeframe} 数据")
-                    
-                    time.sleep(1)  # Tushare API限制
+                    # Tushare API限制
+                    time.sleep(1)
                     
                 except Exception as e:
-                    self.logger.error(f"获取Tushare {symbol} {timeframe} 数据失败: {e}")
+                    self.logger.error(f"获取A股数据失败 {symbol} {timeframe}: {e}")
                     continue
         
         return total_inserted
+    
+    def fetch_single_stock_data(self, symbol: str, exchange: str = 'tushare', 
+                               timeframe: str = '1d', days: int = 365) -> int:
+        """
+        获取单只股票数据
+        
+        Args:
+            symbol: 股票代码 (如 '000001.SZ')
+            exchange: 交易所 ('tushare', 'yahoo')
+            timeframe: 时间周期
+            days: 获取多少天的数据
+            
+        Returns:
+            插入的数据条数
+        """
+        if exchange not in self.fetchers:
+            self.logger.error(f"不支持的交易所: {exchange}")
+            return 0
+            
+        fetcher = self.fetchers[exchange]
+        
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=days)
+        
+        try:
+            # 检查是否已有数据
+            latest_timestamp = self.db_manager.get_latest_timestamp(
+                symbol, exchange, timeframe
+            )
+            
+            if latest_timestamp:
+                fetch_start_time = datetime.fromtimestamp(latest_timestamp / 1000)
+                fetch_start_time += self._get_timeframe_delta(timeframe)
+            else:
+                fetch_start_time = start_time
+            
+            if fetch_start_time >= end_time:
+                self.logger.info(f"{exchange} {symbol} {timeframe} 数据已是最新")
+                return 0
+            
+            # 获取数据
+            data = fetcher.fetch_data(
+                symbol=symbol,
+                timeframe=timeframe,
+                start_time=fetch_start_time,
+                end_time=end_time
+            )
+            
+            # 保存到数据库
+            if not data.empty:
+                inserted_count = self.db_manager.save_data(
+                    data, symbol, exchange, timeframe
+                )
+                return inserted_count
+            else:
+                return 0
+                
+        except Exception as e:
+            self.logger.error(f"获取 {exchange} {symbol} {timeframe} 数据失败: {e}")
+            return 0
     
     def fetch_all_data(self, config: Dict = None) -> Dict[str, int]:
         """
